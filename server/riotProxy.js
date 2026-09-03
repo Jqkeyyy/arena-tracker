@@ -82,9 +82,15 @@ export function buildRiotRequest(searchParams) {
   throw new Error('Unsupported Riot API action.')
 }
 
-function getClientIp(request) {
+export function getClientIp(request) {
   const forwarded = request.headers['x-forwarded-for']
-  if (typeof forwarded === 'string') return forwarded.split(',')[0].trim()
+  if (typeof forwarded === 'string') {
+    // The trusted edge proxy appends the real client IP as the last hop;
+    // earlier entries can be set by the client itself, so trusting the
+    // first entry lets a caller spoof a new IP on every request.
+    const ips = forwarded.split(',').map((ip) => ip.trim()).filter(Boolean)
+    if (ips.length > 0) return ips[ips.length - 1]
+  }
   return request.socket?.remoteAddress || 'unknown'
 }
 
@@ -106,11 +112,15 @@ function isRateLimited(ip, now = Date.now()) {
   return current.count > RATE_LIMIT_REQUESTS
 }
 
-function isCrossSite(request) {
-  if (request.headers['sec-fetch-site'] === 'cross-site') return true
+export function isCrossSite(request) {
+  const secFetchSite = request.headers['sec-fetch-site']
+  if (secFetchSite) return !['same-origin', 'same-site', 'none'].includes(secFetchSite)
+
   const origin = request.headers.origin
   const host = request.headers['x-forwarded-host'] || request.headers.host
-  if (!origin || !host) return false
+  // Fail closed: without Sec-Fetch-Site or a comparable Origin/Host pair,
+  // same-site status can't be verified, so treat the request as cross-site.
+  if (!origin || !host) return true
   try {
     return new URL(origin).host !== host
   } catch {
